@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Matrixify Product Exporter
  * Description: Exporta los productos de WooCommerce a un fichero .xlsx con la misma estructura de columnas que usa Matrixify para importar en Shopify.
- * Version: 1.0.1
+ * Version: 1.1.0
  * Author: Adrià
  * Text Domain: matrixify-product-exporter
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MPE_VERSION', '1.0.1' );
+define( 'MPE_VERSION', '1.1.0' );
 define( 'MPE_EXPORT_BATCH_SIZE', apply_filters( 'mpe_export_batch_size', 100 ) );
 
 /**
@@ -144,11 +144,10 @@ function mpe_build_product_rows( WC_Product $product ) {
 	$vendor       = mpe_get_vendor( $product );
 	$type         = mpe_get_primary_category_name( $product );
 	$tags         = mpe_get_tags( $product );
-	$status_map   = array( 'publish' => 'active', 'draft' => 'draft', 'pending' => 'draft', 'private' => 'archived' );
-	$status       = isset( $status_map[ $product->get_status() ] ) ? $status_map[ $product->get_status() ] : 'draft';
+	$status_map   = array( 'publish' => 'Active', 'draft' => 'Draft', 'pending' => 'Draft', 'private' => 'Archived' );
+	$status       = isset( $status_map[ $product->get_status() ] ) ? $status_map[ $product->get_status() ] : 'Draft';
 	$published    = ( 'publish' === $product->get_status() && $product->is_visible() ) ? 'TRUE' : 'FALSE';
 	$published_at = $product->get_date_created() ? $product->get_date_created()->date( 'Y-m-d H:i:s O' ) : '';
-	$category_full = mpe_get_category_path( $product );
 	$collections   = mpe_get_all_categories( $product );
 	$seo_title     = mpe_get_seo_title( $product );
 	$seo_desc      = mpe_get_seo_description( $product );
@@ -178,9 +177,13 @@ function mpe_build_product_rows( WC_Product $product ) {
 			'Published Scope' => $is_first ? 'global' : '',
 			'Template Suffix' => '',
 			'Gift Card'       => $is_first ? 'FALSE' : '',
+			// 'Category'/'Category: ID'/'Category: Name' map to Shopify's fixed standardized
+			// product taxonomy, not free-text store categories — left blank on purpose since
+			// WooCommerce category names don't correspond to that taxonomy. The real category
+			// hierarchy goes into Custom Collections instead.
 			'Category: ID'    => '',
-			'Category: Name'  => $is_first ? $type : '',
-			'Category'        => $is_first ? $category_full : '',
+			'Category: Name'  => '',
+			'Category'        => '',
 			'Custom Collections' => $is_first ? $collections : '',
 			'Image Attachment' => '',
 			'Image Src'        => $image ? $image['src'] : '',
@@ -211,8 +214,10 @@ function mpe_build_product_rows( WC_Product $product ) {
 			'Variant Fulfillment Service' => $variant ? 'manual' : '',
 			'Variant Requires Shipping' => $variant ? $variant['requires_shipping'] : '',
 			'Variant Shipping Profile'  => '',
+			// Left blank: Matrixify doesn't accept Adjust (relative) alongside Qty (absolute) —
+			// this export always sends the absolute Qty.
 			'Variant Inventory Qty'     => $variant ? $variant['inventory_qty'] : '',
-			'Variant Inventory Adjust'  => $variant ? 0 : '',
+			'Variant Inventory Adjust'  => '',
 			'Variant HS Code'           => '',
 			'Variant Country of Origin' => '',
 			'Variant Province of Origin' => '',
@@ -238,7 +243,8 @@ function mpe_get_vendor( WC_Product $product ) {
 			return $terms[0]->name;
 		}
 	}
-	return '';
+	// Matrixify: Vendor cannot be empty (Shopify falls back to the store name), so match that here.
+	return get_bloginfo( 'name' );
 }
 
 function mpe_get_primary_category_name( WC_Product $product ) {
@@ -249,29 +255,17 @@ function mpe_get_primary_category_name( WC_Product $product ) {
 	return '';
 }
 
-function mpe_get_category_path( WC_Product $product ) {
-	$terms = get_the_terms( $product->get_id(), 'product_cat' );
-	if ( ! $terms || is_wp_error( $terms ) ) {
-		return '';
-	}
-	$term = $terms[0];
-	$path = array( $term->name );
-	while ( $term->parent ) {
-		$term = get_term( $term->parent, 'product_cat' );
-		if ( ! $term || is_wp_error( $term ) ) {
-			break;
-		}
-		array_unshift( $path, $term->name );
-	}
-	return implode( ' > ', $path );
-}
-
 function mpe_get_all_categories( WC_Product $product ) {
 	$terms = get_the_terms( $product->get_id(), 'product_cat' );
 	if ( ! $terms || is_wp_error( $terms ) ) {
 		return '';
 	}
-	return implode( ', ', wp_list_pluck( $terms, 'name' ) );
+	// Matrixify's Custom Collections column expects collection handles, comma-separated;
+	// commas inside a handle are escaped so they aren't read as separators (unlikely for
+	// slugs, but matches Matrixify's own escaping convention for this field).
+	return implode( ', ', array_map( function ( $term ) {
+		return str_replace( ',', '\\,', $term->slug );
+	}, $terms ) );
 }
 
 function mpe_get_tags( WC_Product $product ) {
@@ -397,7 +391,7 @@ function mpe_variant_from_product( WC_Product $variant_product, $option_names, $
 		'barcode'           => $barcode ?: '',
 		'image'             => $variant_image ?: '',
 		'weight'            => $variant_product->get_weight() ?: '',
-		'weight_unit'       => get_option( 'woocommerce_weight_unit', 'kg' ),
+		'weight_unit'       => mpe_weight_unit(),
 		'price'             => $price,
 		'compare_at_price'  => $compare,
 		'cost'              => $cost ?: '',
@@ -407,6 +401,13 @@ function mpe_variant_from_product( WC_Product $variant_product, $option_names, $
 		'requires_shipping' => $variant_product->is_virtual() ? 'FALSE' : 'TRUE',
 		'inventory_qty'     => $variant_product->get_manage_stock() ? (int) $variant_product->get_stock_quantity() : 0,
 	);
+}
+
+function mpe_weight_unit() {
+	// WooCommerce stores 'lbs'; Matrixify's Variant Weight Unit only accepts g/kg/oz/lb.
+	$map = array( 'lbs' => 'lb' );
+	$unit = get_option( 'woocommerce_weight_unit', 'kg' );
+	return isset( $map[ $unit ] ) ? $map[ $unit ] : $unit;
 }
 
 /**
