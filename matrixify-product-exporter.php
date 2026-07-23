@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Matrixify Product Exporter
  * Description: Exporta los productos de WooCommerce a un fichero .xlsx con la misma estructura de columnas que usa Matrixify para importar en Shopify.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Adrià
  * Text Domain: matrixify-product-exporter
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MPE_VERSION', '1.0.0' );
+define( 'MPE_VERSION', '1.0.1' );
 define( 'MPE_EXPORT_BATCH_SIZE', apply_filters( 'mpe_export_batch_size', 100 ) );
 
 /**
@@ -62,7 +62,7 @@ function mpe_render_admin_page() {
 				</tr>
 			</table>
 			<p class="submit">
-				<button type="submit" name="mpe_do_export" class="button button-primary">Generar y descargar .xlsx</button>
+				<button type="submit" name="mpe_do_export" value="1" class="button button-primary">Generar y descargar .xlsx</button>
 			</p>
 		</form>
 
@@ -77,7 +77,7 @@ function mpe_render_admin_page() {
  * ------------------------------------------------------------------
  */
 add_action( 'admin_init', function () {
-	if ( empty( $_POST['mpe_do_export'] ) ) {
+	if ( ! isset( $_POST['mpe_do_export'] ) ) {
 		return;
 	}
 	if ( ! isset( $_POST['mpe_export_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['mpe_export_nonce'] ) ), 'mpe_export_action' ) ) {
