@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Matrixify Product Exporter
  * Description: Exporta los productos de WooCommerce a un fichero .xlsx con la misma estructura de columnas que usa Matrixify para importar en Shopify.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Adrià
  * Text Domain: matrixify-product-exporter
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MPE_VERSION', '1.1.0' );
+define( 'MPE_VERSION', '1.2.0' );
 define( 'MPE_EXPORT_BATCH_SIZE', apply_filters( 'mpe_export_batch_size', 100 ) );
 
 /**
@@ -60,15 +60,26 @@ function mpe_render_admin_page() {
 						<label><input type="checkbox" name="mpe_status[]" value="private"> Privados</label>
 					</td>
 				</tr>
+				<tr>
+					<th scope="row"><label for="mpe_location">Ubicación de inventario en Shopify</label></th>
+					<td>
+						<input type="text" id="mpe_location" name="mpe_location" value="<?php echo esc_attr( mpe_get_inventory_location() ); ?>" class="regular-text">
+						<p class="description">Nombre exacto de la ubicación en Shopify (Settings &gt; Locations) donde se cargará todo el stock de WooCommerce. Debe coincidir carácter a carácter, si no Matrixify rechaza la fila.</p>
+					</td>
+				</tr>
 			</table>
 			<p class="submit">
 				<button type="submit" name="mpe_do_export" value="1" class="button button-primary">Generar y descargar .xlsx</button>
 			</p>
 		</form>
 
-		<p><em>Nota:</em> "Body HTML" se rellena con la descripción corta del producto. La descripción larga no se usa porque en esta tienda está generada por el constructor de BeTheme y no contiene HTML utilizable. Algunos campos tampoco tienen un equivalente directo en WooCommerce estándar (Vendor/marca, Barcode, Cost); el plugin los rellena solo si detecta los campos habituales (taxonomía <code>product_brand</code>, meta <code>_global_unique_id</code>/<code>_barcode</code>, meta de "Cost of Goods"). Revisa el fichero generado antes de importarlo en Shopify.</p>
+		<p><em>Nota:</em> "Body HTML" se rellena con la descripción corta del producto. La descripción larga no se usa porque en esta tienda está generada por el constructor de BeTheme y no contiene HTML utilizable. Algunos campos tampoco tienen un equivalente directo en WooCommerce estándar (Vendor/marca, Barcode, Cost); el plugin los rellena solo si detecta los campos habituales (taxonomía <code>product_brand</code>, meta <code>_global_unique_id</code>/<code>_barcode</code>, meta de "Cost of Goods"). Todo el stock de WooCommerce se asigna a una única ubicación de Shopify (arriba); "Custom Collections" no se rellena porque la tienda ya tiene Smart Collections con esos mismos handles y Matrixify no puede crear una Custom Collection encima. Revisa el fichero generado antes de importarlo en Shopify.</p>
 	</div>
 	<?php
+}
+
+function mpe_get_inventory_location() {
+	return get_option( 'mpe_inventory_location', 'Shop location' );
 }
 
 /**
@@ -92,8 +103,14 @@ add_action( 'admin_init', function () {
 		$statuses = array( 'publish' );
 	}
 
+	$location = isset( $_POST['mpe_location'] ) ? sanitize_text_field( wp_unslash( $_POST['mpe_location'] ) ) : mpe_get_inventory_location();
+	if ( '' === $location ) {
+		$location = 'Shop location';
+	}
+	update_option( 'mpe_inventory_location', $location );
+
 	try {
-		mpe_stream_export( $statuses );
+		mpe_stream_export( $statuses, $location );
 		exit;
 	} catch ( \Throwable $e ) {
 		// Catch fatals too (e.g. missing ZipArchive), not just Exceptions.
@@ -111,7 +128,7 @@ add_action( 'admin_init', function () {
  * Column definition (exact order/names required by Matrixify)
  * ------------------------------------------------------------------
  */
-function mpe_columns() {
+function mpe_columns( $location ) {
 	return array(
 		'Handle', 'Command', 'Title', 'Body HTML', 'Vendor', 'Type', 'Tags', 'Tags Command',
 		'Status', 'Published', 'Published At', 'Published Scope', 'Template Suffix', 'Gift Card',
@@ -122,8 +139,11 @@ function mpe_columns() {
 		'Variant SKU', 'Variant Barcode', 'Variant Image', 'Variant Weight', 'Variant Weight Unit',
 		'Variant Price', 'Variant Compare At Price', 'Variant Cost', 'Variant Taxable',
 		'Variant Inventory Tracker', 'Variant Inventory Policy', 'Variant Fulfillment Service',
-		'Variant Requires Shipping', 'Variant Shipping Profile', 'Variant Inventory Qty',
-		'Variant Inventory Adjust', 'Variant HS Code', 'Variant Country of Origin', 'Variant Province of Origin',
+		'Variant Requires Shipping', 'Variant Shipping Profile',
+		// The store has several Shopify locations, so Matrixify rejects the generic
+		// "Variant Inventory Qty" column and requires a per-location column instead.
+		'Inventory Available: ' . $location,
+		'Variant HS Code', 'Variant Country of Origin', 'Variant Province of Origin',
 		'Metafield: title_tag [string]', 'Metafield: description_tag [string]',
 	);
 }
@@ -133,7 +153,7 @@ function mpe_columns() {
  * Build rows for one product and stream them into the writer
  * ------------------------------------------------------------------
  */
-function mpe_build_product_rows( WC_Product $product ) {
+function mpe_build_product_rows( WC_Product $product, $location ) {
 	$rows = array();
 
 	$handle       = $product->get_slug();
@@ -148,7 +168,6 @@ function mpe_build_product_rows( WC_Product $product ) {
 	$status       = isset( $status_map[ $product->get_status() ] ) ? $status_map[ $product->get_status() ] : 'Draft';
 	$published    = ( 'publish' === $product->get_status() && $product->is_visible() ) ? 'TRUE' : 'FALSE';
 	$published_at = $product->get_date_created() ? $product->get_date_created()->date( 'Y-m-d H:i:s O' ) : '';
-	$collections   = mpe_get_all_categories( $product );
 	$seo_title     = mpe_get_seo_title( $product );
 	$seo_desc      = mpe_get_seo_description( $product );
 
@@ -179,12 +198,14 @@ function mpe_build_product_rows( WC_Product $product ) {
 			'Gift Card'       => $is_first ? 'FALSE' : '',
 			// 'Category'/'Category: ID'/'Category: Name' map to Shopify's fixed standardized
 			// product taxonomy, not free-text store categories — left blank on purpose since
-			// WooCommerce category names don't correspond to that taxonomy. The real category
-			// hierarchy goes into Custom Collections instead.
+			// WooCommerce category names don't correspond to that taxonomy.
 			'Category: ID'    => '',
 			'Category: Name'  => '',
 			'Category'        => '',
-			'Custom Collections' => $is_first ? $collections : '',
+			// Left blank: the store already has Smart Collections whose handles collide with
+			// these WooCommerce category slugs, and Matrixify can't create a Custom Collection
+			// over an existing Smart Collection (confirmed by a failed test import).
+			'Custom Collections' => '',
 			'Image Attachment' => '',
 			'Image Src'        => $image ? $image['src'] : '',
 			'Image Command'    => $image ? 'MERGE' : '',
@@ -214,10 +235,9 @@ function mpe_build_product_rows( WC_Product $product ) {
 			'Variant Fulfillment Service' => $variant ? 'manual' : '',
 			'Variant Requires Shipping' => $variant ? $variant['requires_shipping'] : '',
 			'Variant Shipping Profile'  => '',
-			// Left blank: Matrixify doesn't accept Adjust (relative) alongside Qty (absolute) —
-			// this export always sends the absolute Qty.
-			'Variant Inventory Qty'     => $variant ? $variant['inventory_qty'] : '',
-			'Variant Inventory Adjust'  => '',
+			// The store has several Shopify locations, so all WooCommerce stock is assigned
+			// to the single configured location instead of the generic Qty/Adjust columns.
+			'Inventory Available: ' . $location => $variant ? $variant['inventory_qty'] : '',
 			'Variant HS Code'           => '',
 			'Variant Country of Origin' => '',
 			'Variant Province of Origin' => '',
@@ -253,19 +273,6 @@ function mpe_get_primary_category_name( WC_Product $product ) {
 		return $terms[0]->name;
 	}
 	return '';
-}
-
-function mpe_get_all_categories( WC_Product $product ) {
-	$terms = get_the_terms( $product->get_id(), 'product_cat' );
-	if ( ! $terms || is_wp_error( $terms ) ) {
-		return '';
-	}
-	// Matrixify's Custom Collections column expects collection handles, comma-separated;
-	// commas inside a handle are escaped so they aren't read as separators (unlikely for
-	// slugs, but matches Matrixify's own escaping convention for this field).
-	return implode( ', ', array_map( function ( $term ) {
-		return str_replace( ',', '\\,', $term->slug );
-	}, $terms ) );
 }
 
 function mpe_get_tags( WC_Product $product ) {
@@ -422,7 +429,7 @@ function mpe_weight_unit() {
  * batches to avoid it here too.
  * ------------------------------------------------------------------
  */
-function mpe_stream_export( $statuses ) {
+function mpe_stream_export( $statuses, $location ) {
 	if ( ! class_exists( 'WooCommerce' ) ) {
 		throw new Exception( 'WooCommerce no está activo.' );
 	}
@@ -445,7 +452,7 @@ function mpe_stream_export( $statuses ) {
 		header( 'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' );
 		header( 'Content-Disposition: attachment; filename="' . $filename_base . '.xlsx"' );
 		$writer = new MPE_XLSX_Writer();
-		$writer->add_row( mpe_columns() );
+		$writer->add_row( mpe_columns( $location ) );
 		$write_row = function ( $row ) use ( $writer ) {
 			$writer->add_row( $row );
 		};
@@ -456,7 +463,7 @@ function mpe_stream_export( $statuses ) {
 		header( 'Content-Disposition: attachment; filename="' . $filename_base . '.csv"' );
 		echo "\xEF\xBB\xBF"; // UTF-8 BOM so Excel opens accents correctly.
 		$out = fopen( 'php://output', 'w' );
-		fputcsv( $out, mpe_columns() );
+		fputcsv( $out, mpe_columns( $location ) );
 		$write_row = function ( $row ) use ( $out ) {
 			fputcsv( $out, $row );
 		};
@@ -481,7 +488,7 @@ function mpe_stream_export( $statuses ) {
 			if ( ! $product ) {
 				continue;
 			}
-			foreach ( mpe_build_product_rows( $product ) as $row ) {
+			foreach ( mpe_build_product_rows( $product, $location ) as $row ) {
 				$write_row( $row );
 			}
 			clean_post_cache( $product_id );
